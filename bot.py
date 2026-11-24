@@ -1,4 +1,4 @@
-import os, base64, logging, collections, asyncio
+import os, base64, logging, collections, asyncio, time
 import httpx
 from telegram import Update
 from telegram.constants import ChatAction
@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ["BOT_TOKEN"]
 GKEY = os.environ["GEMINI_API_KEY"]
 MODELS = [m.strip() for m in os.environ.get(
-    "GEMINI_MODELS", "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
+    "GEMINI_MODELS", "gemini-3.5-flash-lite,gemini-3.6-flash,gemini-3.8-flash").split(",") if m.strip()]
 SYSTEM = ("أنت مساعد ذكاء اصطناعي داخل تلكرام. جاوب بنفس لغة المستخدم، وإذا كتب بالعربي "
           "جاوب بلهجة عراقية بسيطة وواضحة. اكتب، ترجم، لخّص، اشرح، وافهم الصور. "
           "لا تدّعي أن عندك وصول لإيميل أو تقويم أو حسابات. كن مختصراً ما لم يُطلب التفصيل.")
@@ -21,6 +21,7 @@ async def ask(chat_id, parts):
     h.append({"role": "user", "parts": parts})
     body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": h[-MAXTURNS:]}
     r = None
+    t0 = time.time()
     async with httpx.AsyncClient(timeout=60) as c:
         for attempt in range(6):
             model = MODELS[attempt % len(MODELS)]
@@ -33,6 +34,7 @@ async def ask(chat_id, parts):
                 await asyncio.sleep(1.5)
                 continue
             if r.status_code == 200:
+                logging.info("gemini ok model=%s attempt=%s secs=%.1f", model, attempt, time.time() - t0)
                 break
             logging.error("gemini %s %s -> %s %s", model, attempt, r.status_code, r.text[:200])
             if r.status_code in (429, 500, 503, 404):
