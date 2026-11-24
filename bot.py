@@ -1,4 +1,4 @@
-import os, base64, logging, collections
+import os, base64, logging, collections, asyncio
 import httpx
 from telegram import Update
 from telegram.constants import ChatAction
@@ -7,8 +7,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.environ["BOT_TOKEN"]
 GKEY = os.environ["GEMINI_API_KEY"]
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+MODELS = [m.strip() for m in os.environ.get(
+    "GEMINI_MODELS", "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
 SYSTEM = ("أنت مساعد ذكاء اصطناعي داخل تلكرام. جاوب بنفس لغة المستخدم، وإذا كتب بالعربي "
           "جاوب بلهجة عراقية بسيطة وواضحة. اكتب، ترجم، لخّص، اشرح، وافهم الصور. "
           "لا تدّعي أن عندك وصول لإيميل أو تقويم أو حسابات. كن مختصراً ما لم يُطلب التفصيل.")
@@ -20,12 +20,28 @@ async def ask(chat_id, parts):
     h = history[chat_id]
     h.append({"role": "user", "parts": parts})
     body = {"system_instruction": {"parts": [{"text": SYSTEM}]}, "contents": h[-MAXTURNS:]}
-    async with httpx.AsyncClient(timeout=90) as c:
-        r = await c.post(URL, headers={"x-goog-api-key": GKEY}, json=body)
-    if r.status_code != 200:
+    r = None
+    async with httpx.AsyncClient(timeout=60) as c:
+        for attempt in range(6):
+            model = MODELS[attempt % len(MODELS)]
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            try:
+                r = await c.post(url, headers={"x-goog-api-key": GKEY}, json=body)
+            except Exception as e:
+                logging.error("gemini request failed %s", e)
+                r = None
+                await asyncio.sleep(1.5)
+                continue
+            if r.status_code == 200:
+                break
+            logging.error("gemini %s %s -> %s %s", model, attempt, r.status_code, r.text[:200])
+            if r.status_code in (429, 500, 503, 404):
+                await asyncio.sleep(1.5)
+                continue
+            break
+    if r is None or r.status_code != 200:
         h.pop()
-        logging.error("gemini %s %s", r.status_code, r.text[:300])
-        return "صار خطأ من خدمة الذكاء الاصطناعي، جرب بعد شوية." if r.status_code != 429 else "وصلنا حد الاستخدام المجاني، جرب بعد دقيقة."
+        return "الذكاء الاصطناعي مشغول هسه، جرب مرة ثانية بعد شوية."
     try:
         text = "".join(p.get("text", "") for p in r.json()["candidates"][0]["content"]["parts"]).strip()
     except Exception:
